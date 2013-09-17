@@ -3,13 +3,14 @@ project(nandwebradio)
 
 find_package(PkgConfig)
 pkg_check_modules(LIBWEBSOCKETS REQUIRED libwebsockets)
-include_directories(${LIBWEBSOCKETS_INCLUDE_DIRS})
-link_directories(${LIBWEBSOCKETS_LIBRARY_DIRS})
+pkg_check_modules(LIBRTLSDR REQUIRED librtlsdr)
+include_directories(${LIBWEBSOCKETS_INCLUDE_DIRS} ${LIBRTLSDR_INCLUDE_DIRS})
+link_directories(${LIBWEBSOCKETS_LIBRARY_DIRS} ${LIBRTLSDR_LIBRARY_DIRS})
 
 set(CMAKE_CXX_FLAGS "-Wall")
 set(SOURCES src/main.c)
 add_executable(nandwebradio ${SOURCES})
-target_link_libraries(nandwebradio ${LIBWEBSOCKETS_LIBRARIES})
+target_link_libraries(nandwebradio ${LIBWEBSOCKETS_LIBRARIES} ${LIBRTLSDR_LIBRARIES})
 
 set(HTML_FILES 
   ${PROJECT_SOURCE_DIR}/src/html/index.html 

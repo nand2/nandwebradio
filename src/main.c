@@ -31,26 +31,13 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <assert.h>
-#ifdef WIN32
-
-#ifdef EXTERNAL_POLL
-	#ifndef WIN32_LEAN_AND_MEAN
-	#define WIN32_LEAN_AND_MEAN
-	#endif
-	#include <winsock2.h>
-	#include <ws2tcpip.h>
-	#include <stddef.h>
-
-	#include "websock-w32.h"
-#endif
-
-#else // NOT WIN32
 #include <syslog.h>
-#endif
 
 #include <signal.h>
 
 #include <libwebsockets.h>
+
+#include <rtl-sdr.h>
 
 static int close_testing;
 int max_poll_elements;
@@ -148,11 +135,7 @@ static int callback_http(struct libwebsocket_context *context,
 
 			p = buffer;
 
-#ifdef WIN32
-			pss->fd = open(leaf_path, O_RDONLY | _O_BINARY);
-#else
 			pss->fd = open(leaf_path, O_RDONLY);
-#endif
 
 			if (pss->fd < 0)
 				return -1;
@@ -607,7 +590,6 @@ static struct option options[] = {
 	{ "help",	no_argument,		NULL, 'h' },
 	{ "debug",	required_argument,	NULL, 'd' },
 	{ "port",	required_argument,	NULL, 'p' },
-	{ "ssl",	no_argument,		NULL, 's' },
 	{ "interface",  required_argument,	NULL, 'i' },
 	{ "closetest",  no_argument,		NULL, 'c' },
 #ifndef LWS_NO_DAEMONIZE
@@ -619,19 +601,16 @@ static struct option options[] = {
 
 int main(int argc, char **argv)
 {
-	char cert_path[1024];
-	char key_path[1024];
-	int n = 0;
-	int use_ssl = 0;
+	int n = 0, i = 0, dev_index = 0;
 	struct libwebsocket_context *context;
 	int opts = 0;
 	char interface_name[128] = "";
 	const char *iface = NULL;
-#ifndef WIN32
 	int syslog_options = LOG_PID | LOG_PERROR;
-#endif
 	unsigned int oldus = 0;
 	struct lws_context_creation_info info;
+	int device_count;
+	char vendor[256], product[256], serial[256];
 
 	int debug_level = 7;
 #ifndef LWS_NO_DAEMONIZE
@@ -649,16 +628,11 @@ int main(int argc, char **argv)
 #ifndef LWS_NO_DAEMONIZE
 		case 'D':
 			daemonize = 1;
-			#ifndef WIN32
 			syslog_options &= ~LOG_PERROR;
-			#endif
 			break;
 #endif
 		case 'd':
 			debug_level = atoi(optarg);
-			break;
-		case 's':
-			use_ssl = 1;
 			break;
 		case 'p':
 			info.port = atoi(optarg);
@@ -679,15 +653,15 @@ int main(int argc, char **argv)
 			printf("Setting resource path to \"%s\"\n", resource_path);
 			break;
 		case 'h':
-			fprintf(stderr, "Usage: test-server "
-					"[--port=<p>] [--ssl] "
+			fprintf(stderr, "Usage: nandwebradio "
+					"[--port=<p>] "
 					"[-d <log bitfield>] "
 					"[--resource_path <path>]\n");
 			exit(1);
 		}
 	}
 
-#if !defined(LWS_NO_DAEMONIZE) && !defined(WIN32)
+#if !defined(LWS_NO_DAEMONIZE)
 	/* 
 	 * normally lock path would be /var/lock/lwsts or similar, to
 	 * simplify getting started without having to take care about
@@ -701,18 +675,14 @@ int main(int argc, char **argv)
 
 	signal(SIGINT, sighandler);
 
-#ifndef WIN32
 	/* we will only try to log things according to our debug_level */
 	setlogmask(LOG_UPTO (LOG_DEBUG));
 	openlog("lwsts", syslog_options, LOG_DAEMON);
-#endif
 
 	/* tell the library what debug level to emit and to send it to syslog */
 	lws_set_log_level(debug_level, lwsl_emit_syslog);
 
-	lwsl_notice("libwebsockets test server - "
-			"(C) Copyright 2010-2013 Andy Green <andy@warmcat.com> - "
-						    "licensed under LGPL2.1\n");
+	lwsl_notice("nandwebradio server\n");
 #ifdef EXTERNAL_POLL
 	max_poll_elements = getdtablesize();
 	pollfds = malloc(max_poll_elements * sizeof (struct pollfd));
@@ -728,26 +698,8 @@ int main(int argc, char **argv)
 #ifndef LWS_NO_EXTENSIONS
 	info.extensions = libwebsocket_get_internal_extensions();
 #endif
-	if (!use_ssl) {
-		info.ssl_cert_filepath = NULL;
-		info.ssl_private_key_filepath = NULL;
-	} else {
-		if (strlen(resource_path) > sizeof(cert_path) - 32) {
-			lwsl_err("resource path too long\n");
-			return -1;
-		}
-		sprintf(cert_path, "%s/libwebsockets-test-server.pem",
-								resource_path);
-		if (strlen(resource_path) > sizeof(key_path) - 32) {
-			lwsl_err("resource path too long\n");
-			return -1;
-		}
-		sprintf(key_path, "%s/libwebsockets-test-server.key.pem",
-								resource_path);
-
-		info.ssl_cert_filepath = cert_path;
-		info.ssl_private_key_filepath = key_path;
-	}
+	info.ssl_cert_filepath = NULL;
+	info.ssl_private_key_filepath = NULL;
 	info.gid = -1;
 	info.uid = -1;
 	info.options = opts;
@@ -757,6 +709,22 @@ int main(int argc, char **argv)
 		lwsl_err("libwebsocket init failed\n");
 		return -1;
 	}
+
+	device_count = rtlsdr_get_device_count();
+	if (!device_count) {
+		lwsl_err("No supported devices found.\n");
+		exit(1);
+	}
+
+	lwsl_notice("Found %d RTL2832 device(s):\n", device_count);
+	for (i = 0; i < device_count; i++) {
+		rtlsdr_get_device_usb_strings(i, vendor, product, serial);
+		lwsl_notice(" %d:  %s, %s, SN: %s\n", i, vendor, product, serial);
+	}
+	lwsl_notice("\n");
+
+	lwsl_notice("Using device %d: %s\n",
+		dev_index, rtlsdr_get_device_name(dev_index));
 
 	n = 0;
 	while (n >= 0 && !force_exit) {
@@ -820,9 +788,7 @@ done:
 
 	lwsl_notice("libwebsockets-test-server exited cleanly\n");
 
-#ifndef WIN32
 	closelog();
-#endif
 
 	return 0;
 }
